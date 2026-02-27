@@ -22,20 +22,18 @@ Content is retrieved from venite.app. All credit for this original source goes t
   playwright install chromium
 
 ## Usage
-  python generate_bcp_ebook.py"  Generates a full year (default 2026)
+  `python generate_bcp_ebook.py`
   
   ### Arguments
-    | argument | description |
-    | ----------- | ----------- |
-    | --year | Generates the entire year unless a month is specified. Excluding this argument results in the current year. |
-    | --month | Generates a specific month from the default year, unless the year is specified. Accepts a number (1-12) or a full/abbreviated month name. |
-    | --date | Generates a specific date (YYYY-MM-DD). Unable to be combined with the year or month argument. |
-    | --season | Gerenates the entire liturgical season (advent, christmas or xmas, epiphany, lent, holyweek or holy-week, easter or eastertide, ordinary-time or ordinarytime or pentecost). |
+    `--year`  Generates the entire year unless a month is specified. Excluding this argument results in the current year. 
+    `--month`  Generates a specific month from the default year, unless the year is specified. Accepts a number (1-12) or a full/abbreviated month name. 
+    `--date`  Generates a specific date (YYYY-MM-DD). Unable to be combined with the year or month argument. 
+    `--season`  Gerenates the entire liturgical season (advent, christmas or xmas, epiphany, lent, holyweek or holy-week, easter or eastertide, ordinary-time or ordinarytime or pentecost). 
 
 ## Output
-  bcp_daily_office_2026.epub
-  bcp_daily_office_2026_March.epub
-  bcp_daily_office_2026_03_15.epub
+  `bcp_daily_office_2026.epub`
+  `bcp_daily_office_2026_March.epub`
+  `bcp_daily_office_2026_03_15.epub`
 
 ## Kindle
 Use Calibre to convert from EPUB to MOBI.
