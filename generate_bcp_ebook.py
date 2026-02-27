@@ -371,23 +371,50 @@ def _fix_antiphons(soup: BeautifulSoup) -> None:
             if div.find_parent(class_="psalm-set"):
                 div.decompose()
 
-        # Remove every trailing ldf-liturgical-document.antiphon after the first;
-        # that element sits before the gloria refrain in the DOM but liturgically
-        # belongs after it — removing it here lets the antiphon ldf-refrain
-        # (Step 2) serve as the post-gloria repeat.
-        ant_wrappers = psalm_parent.find_all(
-            "ldf-liturgical-document", class_="antiphon"
-        )
-        for aw in ant_wrappers[1:]:
-            aw.decompose()
-
-        # If an external gloria refrain already follows this psalm article,
-        # remove any internal div.gloria to avoid duplication (e.g. Phos Hilaron).
+        # Determine whether an external gloria refrain already follows this psalm.
         psalm_art_s1 = psalm_el.find_parent("article") or psalm_el
         next_sib = psalm_art_s1.find_next_sibling()
         while next_sib and isinstance(next_sib, NavigableString):
             next_sib = next_sib.find_next_sibling()
-        if next_sib and next_sib.find("div", class_="gloria"):
+        has_external_gloria = bool(next_sib and next_sib.find("div", class_="gloria"))
+
+        # Handle ldf-liturgical-document.antiphon elements inside psalm-parent.
+        #
+        # Stanza-boundary antiphons (appearing BEFORE the internal Gloria)
+        # are repeats already handled by the psalm renderer and must be removed.
+        # Closing antiphons (appearing AFTER the internal Gloria) are legitimate
+        # — e.g. the "Guide us waking" repeat after the Nunc Dimittis — and
+        # must be preserved.
+        #
+        # If there is no internal Gloria (because an external refrain will serve,
+        # e.g. Phos Hilaron), all trailing antiphons are duplicates → remove all.
+        ant_wrappers = psalm_parent.find_all(
+            "ldf-liturgical-document", class_="antiphon"
+        )
+        if len(ant_wrappers) > 1:
+            internal_gloria_ref = psalm_parent.find("div", class_="gloria")
+            if internal_gloria_ref:
+                all_desc = list(psalm_parent.descendants)
+                try:
+                    gloria_i = all_desc.index(internal_gloria_ref)
+                except ValueError:
+                    gloria_i = -1
+                for aw in ant_wrappers[1:]:
+                    try:
+                        aw_i = all_desc.index(aw)
+                    except ValueError:
+                        continue
+                    if gloria_i == -1 or aw_i <= gloria_i:
+                        aw.decompose()   # before/at Gloria → stanza repeat → remove
+                    # after Gloria → closing antiphon → keep
+            else:
+                # No internal Gloria: all trailing antiphons are duplicates
+                for aw in ant_wrappers[1:]:
+                    aw.decompose()
+
+        # If an external gloria refrain already follows this psalm,
+        # remove the internal div.gloria to avoid duplication (e.g. Phos Hilaron).
+        if has_external_gloria:
             for internal_g in psalm_el.find_all("div", class_="gloria"):
                 internal_g.decompose()
 
@@ -413,6 +440,18 @@ def _fix_antiphons(soup: BeautifulSoup) -> None:
             prev_art = prev_art.find_previous_sibling()
         if not (prev_art and prev_art.find("div", class_="gloria")):
             continue  # no out-of-order gloria found
+
+        # Don't reposition the Gloria if it directly follows a preces exchange.
+        # In Morning Prayer the opening Gloria ("Glory to the Father…") lives
+        # correctly between "And our mouth shall proclaim your praise" and the
+        # Venite.  Moving it would strip it from that position.  A genuinely
+        # out-of-order Venite Gloria (venite.app bug) has another Gloria, not
+        # a preces-block, immediately before it.
+        prev_of_gloria = prev_art.find_previous_sibling()
+        while prev_of_gloria and isinstance(prev_of_gloria, NavigableString):
+            prev_of_gloria = prev_of_gloria.find_previous_sibling()
+        if prev_of_gloria and prev_of_gloria.find("div", class_="preces-block"):
+            continue  # Gloria follows preces exchange; leave it in place
 
         # Capture antiphon text from the first antiphon wrapper inside the psalm
         ant_wrapper = psalm_parent_el.find("ldf-liturgical-document", class_="antiphon")
@@ -907,9 +946,18 @@ def _add_lesson_citations(soup: BeautifulSoup) -> None:
         container = ldf_doc.find("div", class_="container")
         if not container:
             continue
-        heading = " ".join(container.get_text().split())
-        if heading.lower().startswith("a reading from"):
-            container.append(f" ({citation})")
+        # Find the specific child element that holds "A Reading from…" so the
+        # citation is appended inline to that line rather than after all
+        # child elements of the container (which would place it below the text).
+        heading_el = None
+        for child in container.children:
+            if hasattr(child, "get_text"):
+                child_text = " ".join(child.get_text().split()).lower()
+                if child_text.startswith("a reading from"):
+                    heading_el = child
+                    break
+        if heading_el is not None:
+            heading_el.append(f" ({citation})")
 
 
 # ---------------------------------------------------------------------------
@@ -940,7 +988,7 @@ def _clean_empty_elements(soup: BeautifulSoup) -> None:
 #       B) via text-content pattern matching as a reliable fallback
 # ---------------------------------------------------------------------------
 
-def _add_section_headings(soup: BeautifulSoup) -> None:
+def _add_section_headings(soup: BeautifulSoup, office_name: str = "") -> None:
     """
     Insert h3/h4 section headings that venite.app does not render as HTML.
     Runs after _remove_verse_numbers so <sup> elements are gone, but before
@@ -1028,18 +1076,25 @@ def _add_section_headings(soup: BeautifulSoup) -> None:
                 break
 
     # B3. The Lessons (section header) + The First / Second Lesson
+    # For Noonday Prayer and Compline the single short lesson is labelled
+    # "The Reading" (an h3 section heading, not a subsection h4).
+    _is_noonday_or_compline = office_name in ("Noonday Prayer", "Compline")
     lesson_divs = [
         d for d in soup.find_all("div", class_="bible-reading")
         if "a reading from" in _norm(d) or "a reading" in _norm(d)
     ]
     if lesson_divs:
-        if "The Lessons" not in injected_sections and len(lesson_divs) > 1:
-            _insert_h3_before(lesson_divs[0], "The Lessons")
-        names = {1: "The First Lesson", 2: "The Second Lesson", 3: "The Third Lesson"}
-        for i, br_div in enumerate(lesson_divs, start=1):
-            label = names.get(i, f"Lesson {i}") if len(lesson_divs) > 1 else "The Lesson"
-            if not _prev_is_heading(br_div):
-                _insert_h4_before(br_div, label)
+        if _is_noonday_or_compline:
+            if not _prev_is_heading(lesson_divs[0]):
+                _insert_h3_before(lesson_divs[0], "The Reading")
+        else:
+            if "The Lessons" not in injected_sections and len(lesson_divs) > 1:
+                _insert_h3_before(lesson_divs[0], "The Lessons")
+            names = {1: "The First Lesson", 2: "The Second Lesson", 3: "The Third Lesson"}
+            for i, br_div in enumerate(lesson_divs, start=1):
+                label = names.get(i, f"Lesson {i}") if len(lesson_divs) > 1 else "The Lesson"
+                if not _prev_is_heading(br_div):
+                    _insert_h4_before(br_div, label)
 
     # B4. The Apostles' Creed
     if "The Apostles' Creed" not in injected_sections:
@@ -1051,13 +1106,36 @@ def _add_section_headings(soup: BeautifulSoup) -> None:
                 break
 
     # B5. The Prayers
-    #     The versicle "The Lord be with you" opens the Prayers section.
+    #     MP/EP: opened by "The Lord be with you".
+    #     Noonday/Compline: opened by the Kyrie or Lord's Prayer; fall back to
+    #     "Let us pray" (which precedes the collects).
     if "The Prayers" not in injected_sections:
+        found_prayers = False
         for preces in soup.find_all("div", class_="preces-block"):
             t = _norm(preces)
             if "lord be with you" in t:
                 if not _prev_is_heading(preces):
                     _insert_h3_before(preces, "The Prayers")
+                found_prayers = True
+                break
+        if not found_prayers and _is_noonday_or_compline:
+            # Use "Lord, have mercy" (Kyrie) as the start of the Prayers section
+            for preces in soup.find_all("div", class_="preces-block"):
+                t = _norm(preces)
+                if "lord, have mercy" in t and "christ, have mercy" in t:
+                    if not _prev_is_heading(preces):
+                        _insert_h3_before(preces, "The Prayers")
+                    found_prayers = True
+                    break
+
+    # B6. The Kyrie — Noonday Prayer and Compline only.
+    #     Inserted as an h4 subsection within The Prayers.
+    if _is_noonday_or_compline:
+        for preces in soup.find_all("div", class_="preces-block"):
+            t = _norm(preces)
+            if "lord, have mercy" in t and "christ, have mercy" in t:
+                if not _prev_is_heading(preces):
+                    _insert_h4_before(preces, "The Kyrie", css="lesson-heading")
                 break
 
 
@@ -1309,6 +1387,59 @@ def _add_collect_structure(soup: BeautifulSoup, office_name: str = "") -> None:
 
 
 # ---------------------------------------------------------------------------
+# 15. Filter Compline to a single collect
+# ---------------------------------------------------------------------------
+
+_COMPLINE_KEEP_COLLECT = "keep watch, dear lord, with those who work, or watch, or weep"
+
+def _filter_compline_collect(soup: BeautifulSoup) -> None:
+    """
+    Compline provides several interchangeable collects; retain only
+    "Keep watch, dear Lord…" and remove any others that venite.app rendered.
+
+    Strategy: find every ldf-text article that follows a "Let us pray" preces
+    block; keep the first one whose text contains the desired fingerprint,
+    and decompose the rest.
+    """
+    def _norm(el) -> str:
+        return " ".join(el.get_text().split()).lower()
+
+    for preces_div in soup.find_all("div", class_="preces-block"):
+        if "let us pray" not in _norm(preces_div):
+            continue
+        preces_art = preces_div.find_parent("article") or preces_div
+
+        # Collect all consecutive ldf-text articles following "Let us pray"
+        collect_arts = []
+        sib = preces_art
+        while True:
+            sib = sib.find_next_sibling("article")
+            if not sib or not sib.find("ldf-text"):
+                break
+            if sib.find("ldf-psalm") or sib.find("div", class_="preces-block"):
+                break
+            if "our father" in _norm(sib):
+                break
+            collect_arts.append(sib)
+
+        if not collect_arts:
+            continue
+
+        # Identify which article contains the desired collect
+        keep = None
+        for art in collect_arts:
+            if _COMPLINE_KEEP_COLLECT in _norm(art):
+                keep = art
+                break
+
+        # If the desired collect is present, remove all others
+        if keep is not None:
+            for art in collect_arts:
+                if art is not keep:
+                    art.decompose()
+
+
+# ---------------------------------------------------------------------------
 # Main HTML processing pipeline
 # ---------------------------------------------------------------------------
 
@@ -1357,11 +1488,13 @@ def process_office_html(
                                          # MUST run before _remove_verse_numbers
     _remove_verse_numbers(working)       # <sup> verse numbers in lessons
     _add_lesson_citations(working)       # append (Book chapter:verse) to lesson headings
-    _add_section_headings(working)       # inject missing liturgical headings
+    _add_section_headings(working, office_name)  # inject missing liturgical headings
     _fix_sc_span_spaces(working)         # spaces around "Lord"/"God" spans
     _remove_bcp_page_refs(working)       # BCP p. XX references
     _add_structural_separators(working)  # <hr> at major section transitions
     _add_collect_structure(working, office_name)  # h4 headings + separators for collects
+    if office_name == "Compline":
+        _filter_compline_collect(working)    # keep only "Keep watch, dear Lord…"
     _clean_empty_elements(working)
 
     body = working.find("body")
@@ -1678,15 +1811,32 @@ def _make_day_xhtml(d: date, offices: Dict[str, str]) -> str:
         '  <link rel="stylesheet" type="text/css" href="../style/main.css"/>\n'
         "</head>\n"
         "<body>\n"
-        f'<h1 class="day-header">{title}</h1>\n'
+        f'<h1 class="day-header" id="top">{title}</h1>\n'
         f"{body_content}"
         "</body>\n"
         "</html>\n"
     )
 
 
-def _make_title_xhtml(title_label: str) -> str:
-    """title_label is e.g. '2026', 'March 2026', or 'March 15, 2026'."""
+def _make_title_xhtml(title_label: str,
+                      chapters: List[Tuple[date, str]] = []) -> str:
+    """
+    Build the title-page XHTML.
+
+    title_label – e.g. '2026', 'March 2026', 'March 15, 2026'
+    chapters    – list of (date, file_name) pairs; used to emit nav links so
+                  readers can jump directly to any day from the title page.
+    """
+    # Build clickable day links (links directly to the #top anchor so the
+    # reader always opens at the very first line of the day's content).
+    links_html = ""
+    if chapters:
+        items = "".join(
+            f'  <li><a href="{fname}#top">{day_ordinal(d)}</a></li>\n'
+            for d, fname in chapters
+        )
+        links_html = f'<nav>\n<ol style="list-style:none;padding:0;">\n{items}</ol>\n</nav>\n'
+
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<!DOCTYPE html>\n'
@@ -1704,6 +1854,7 @@ def _make_title_xhtml(title_label: str) -> str:
         "<hr/>\n"
         "<p><em>Morning Prayer · Noonday Prayer · Evening Prayer · Compline</em></p>\n"
         "</div>\n"
+        f"{links_html}"
         "</body>\n"
         "</html>\n"
     )
@@ -1783,7 +1934,10 @@ def build_epub(
         file_name="title.xhtml",
         lang="en",
     )
-    title_page.content = _make_title_xhtml(title_label).encode("utf-8")
+    title_page.content = _make_title_xhtml(
+        title_label,
+        [(d, ch.file_name) for d, ch in chapters],
+    ).encode("utf-8")
     title_page.add_item(css_item)
     book.add_item(title_page)
 
