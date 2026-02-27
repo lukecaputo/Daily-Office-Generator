@@ -381,6 +381,16 @@ def _fix_antiphons(soup: BeautifulSoup) -> None:
         for aw in ant_wrappers[1:]:
             aw.decompose()
 
+        # If an external gloria refrain already follows this psalm article,
+        # remove any internal div.gloria to avoid duplication (e.g. Phos Hilaron).
+        psalm_art_s1 = psalm_el.find_parent("article") or psalm_el
+        next_sib = psalm_art_s1.find_next_sibling()
+        while next_sib and isinstance(next_sib, NavigableString):
+            next_sib = next_sib.find_next_sibling()
+        if next_sib and next_sib.find("div", class_="gloria"):
+            for internal_g in psalm_el.find_all("div", class_="gloria"):
+                internal_g.decompose()
+
     # ── Step 2a: move pre-psalm gloria article to AFTER the psalm ────────
     # venite.app sometimes places the gloria ldf-refrain article BEFORE the
     # invitatory ldf-psalm article in document order.  Detect this pattern
@@ -412,6 +422,12 @@ def _fix_antiphons(soup: BeautifulSoup) -> None:
         # Move the gloria article to immediately AFTER the psalm article
         gloria_art = prev_art.extract()
         psalm_art.insert_after(gloria_art)
+
+        # The external gloria now covers the psalm; remove any internal div.gloria
+        # to avoid a duplicate (the same duplication that affects the Phos Hilaron
+        # when the external refrain is already in position rather than pre-psalm).
+        for internal_g in psalm_el.find_all("div", class_="gloria"):
+            internal_g.decompose()
 
         # Insert a post-gloria antiphon repeat article
         if ant_text:
@@ -1192,7 +1208,7 @@ _FIXED_COLLECT_FINGERPRINTS: List[Tuple[str, str]] = [
 ]
 
 
-def _add_collect_structure(soup: BeautifulSoup) -> None:
+def _add_collect_structure(soup: BeautifulSoup, office_name: str = "") -> None:
     """
     Add h4 collect headings and hr separators between named collects.
 
@@ -1200,8 +1216,10 @@ def _add_collect_structure(soup: BeautifulSoup) -> None:
       1. Label fixed collects (Guidance, Mission, Thanksgiving, Chrysostom …)
          by matching text fingerprints against ldf-text elements.
       2. Label day-specific collects using data-ldf-label from JS injection.
-      3. For Noonday / Compline, add a plain "Collect" h4 heading before the
+         "Collect of the Day" labels are normalised to "The Collect(s) of the Day".
+      3. For Noonday / Compline, add an office-specific h4 heading before the
          first unlabelled ldf-text article that follows a "Let us pray" block.
+         Compline receives a heading only on the first collect.
       4. Insert <hr class="collect-break"> between consecutive collect h4s.
     """
 
@@ -1244,13 +1262,22 @@ def _add_collect_structure(soup: BeautifulSoup) -> None:
         ll = raw_label.lower()
         if any(k in ll for k in ("collect", "prayer for", "thanksgiving")):
             art = ldf.find_parent("article") or ldf
-            _label_art(art, raw_label)
+            display_label = (
+                "The Collect(s) of the Day" if "collect of the day" in ll
+                else raw_label
+            )
+            _label_art(art, display_label)
 
-    # ── 3. Noonday / Compline: "Collect" heading after "Let us pray" ──────
-    # Walk forward from each "Let us pray" preces block and label up to 3
-    # consecutive plain ldf-text articles that aren't already labelled.
-    # Use find_next_sibling("article") to skip any h4/hr elements that
-    # step 1 or 2 may have inserted between the preces and the first collect.
+    # ── 3. Noonday / Compline: office-specific heading after "Let us pray" ─
+    # Walk forward from each "Let us pray" preces block and label unlabelled
+    # ldf-text articles.  Compline gets a heading only on the first collect.
+    if office_name == "Compline":
+        collect_label = "The Collects of Compline"
+    elif office_name == "Noonday Prayer":
+        collect_label = "The Collect of Noonday Prayer"
+    else:
+        collect_label = "Collect"
+
     for preces_div in soup.find_all("div", class_="preces-block"):
         if "let us pray" not in _norm(preces_div):
             continue
@@ -1264,7 +1291,11 @@ def _add_collect_structure(soup: BeautifulSoup) -> None:
                 break               # hit a non-ldf-text element; stop
             if sib.find("ldf-psalm") or sib.find("div", class_="preces-block"):
                 break               # hit psalms or another preces block; stop
-            _label_art(sib, "Collect")
+            if "our father" in _norm(sib):
+                break               # The Lord's Prayer, not a collect
+            _label_art(sib, collect_label)
+            if office_name == "Compline":
+                break               # heading on first collect only
 
     # ── 4. hr separator between consecutive collect headings ──────────────
     for h4 in soup.find_all("h4", class_="collect-heading"):
@@ -1330,7 +1361,7 @@ def process_office_html(
     _fix_sc_span_spaces(working)         # spaces around "Lord"/"God" spans
     _remove_bcp_page_refs(working)       # BCP p. XX references
     _add_structural_separators(working)  # <hr> at major section transitions
-    _add_collect_structure(working)      # h4 headings + separators for collects
+    _add_collect_structure(working, office_name)  # h4 headings + separators for collects
     _clean_empty_elements(working)
 
     body = working.find("body")
@@ -1581,13 +1612,13 @@ nav#toc li.day-entry {
 /* ── Structural separator between major liturgical sections ── */
 hr.office-break {
     border: none;
-    margin: 2.5em 0;
+    margin: 1.2em 0;
 }
 
 /* ── Separator between consecutive named collects ── */
 hr.collect-break {
     border: none;
-    margin: 2em 0;
+    margin: 0.8em 0;
 }
 
 /* ── Named collect heading (Collect of the Day, A Prayer for Mission …) ── */
