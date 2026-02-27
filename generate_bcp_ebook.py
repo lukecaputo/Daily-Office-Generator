@@ -1531,11 +1531,14 @@ div.repeat-antiphon {
 /* ── Gloria Patri / refrain ── */
 div.gloria,
 p.gloria,
-p.gloria-text,
 div.sc-ldf-refrain {
     margin-top: 1em;
     margin-bottom: 1.2em;
     font-style: italic;
+}
+p.gloria-text {
+    margin-top: 1em;
+    margin-bottom: 1.2em;
 }
 
 /* ── Bible reading ── */
