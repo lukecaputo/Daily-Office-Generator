@@ -3,8 +3,10 @@
 ## Introduction
 Generates the Daily Office for every day of the year as pre-formatted EPUB for eReader use.
 
+
 ## Source
 Content is retrieved from venite.app. All credit for this original source goes to Rev. Greg Johnston.
+
 
 ## Formatting Rules
   - Language: English, Rite II, BCP 1979 calendar
@@ -17,19 +19,22 @@ Content is retrieved from venite.app. All credit for this original source goes t
   - Invitatory: Venite (BCP)
   - Include Collects for Minor Feasts: yes
 
+
 ## Dependencies
   `pip install playwright beautifulsoup4 ebooklib lxml`
-  
+
   `playwright install chromium`
+
 
 ## Usage
   `python generate_bcp_ebook.py`
   
-  ### Arguments
+    ```
     --year : Generates the entire year unless a month is specified. Excluding this argument results in the current year. 
     --month : Generates a specific month from the default year, unless the year is specified. Accepts a number (1-12) or a full/abbreviated month name. 
     --date : Generates a specific date (YYYY-MM-DD). Unable to be combined with the year or month argument. 
     --season : Generates the entire liturgical season (advent, christmas or xmas, epiphany, lent, holyweek or holy-week, easter or eastertide, ordinary-time or ordinarytime or pentecost). 
+    ```
 
 ## Output
   `bcp_daily_office_2026.epub`
@@ -37,6 +42,7 @@ Content is retrieved from venite.app. All credit for this original source goes t
   `bcp_daily_office_2026_March.epub`
 
   `bcp_daily_office_2026_03_15.epub`
+
 
 ## Kindle
 Use Calibre to convert from EPUB to MOBI.
