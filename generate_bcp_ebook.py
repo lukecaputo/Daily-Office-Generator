@@ -1661,7 +1661,7 @@ def _make_title_xhtml(title_label: str) -> str:
         '<!DOCTYPE html>\n'
         '<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">\n'
         "<head>\n"
-        f'  <title>The Book of Common Prayer Daily Office — {title_label}</title>\n'
+        f'  <title>Daily Office: {title_label}</title>\n'
         '  <link rel="stylesheet" type="text/css" href="../style/main.css"/>\n'
         "</head>\n"
         "<body>\n"
@@ -1696,7 +1696,7 @@ def build_epub(
     cover_bytes      – raw image bytes for the cover, or None to omit
     cover_media_type – MIME type of the cover image ('image/jpeg' or 'image/png')
     """
-    full_title = f"The Book of Common Prayer Daily Office — {title_label}"
+    full_title = f"Daily Office: {title_label}"
 
     book = epub.EpubBook()
     book.set_identifier(f"bcp-daily-office-{identifier_suffix}")
