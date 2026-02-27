@@ -1581,15 +1581,13 @@ nav#toc li.day-entry {
 /* ── Structural separator between major liturgical sections ── */
 hr.office-break {
     border: none;
-    border-top: 1px solid #ccc;
-    margin: 1.8em 0;
+    margin: 2.5em 0;
 }
 
 /* ── Separator between consecutive named collects ── */
 hr.collect-break {
     border: none;
-    border-top: 1px dashed #ddd;
-    margin: 1.4em 0;
+    margin: 2em 0;
 }
 
 /* ── Named collect heading (Collect of the Day, A Prayer for Mission …) ── */
