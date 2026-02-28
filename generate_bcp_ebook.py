@@ -473,12 +473,21 @@ def _fix_antiphons(soup: BeautifulSoup) -> None:
         if not psalm_art:
             continue
 
-        # Look for a gloria ldf-refrain in the immediately preceding sibling article
-        prev_art = psalm_art.find_previous_sibling()
-        while prev_art and isinstance(prev_art, NavigableString):
-            prev_art = prev_art.find_previous_sibling()
+        # Look for an opening-doxology gloria in the preceding sibling articles.
+        # In Lent the gloria sits immediately before the psalm.  Outside Lent
+        # venite.app inserts a standalone "Alleluia." ldf-text article between
+        # the gloria and the psalm, so we scan back up to 2 siblings.
+        def _prev_sib(el):
+            s = el.find_previous_sibling()
+            while s and isinstance(s, NavigableString):
+                s = s.find_previous_sibling()
+            return s
+
+        prev_art = _prev_sib(psalm_art)
         if not (prev_art and prev_art.find("div", class_="gloria")):
-            continue  # no out-of-order gloria found
+            prev_art = _prev_sib(prev_art) if prev_art else None
+        if not (prev_art and prev_art.find("div", class_="gloria")):
+            continue  # no out-of-order gloria found within 2 preceding siblings
 
         # Capture antiphon text from the first antiphon wrapper inside the psalm
         ant_wrapper = psalm_parent_el.find("ldf-liturgical-document", class_="antiphon")
