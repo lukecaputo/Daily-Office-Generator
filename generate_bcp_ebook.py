@@ -418,6 +418,45 @@ def _fix_antiphons(soup: BeautifulSoup) -> None:
             for internal_g in psalm_el.find_all("div", class_="gloria"):
                 internal_g.decompose()
 
+        # Add a closing antiphon repeat after the internal Gloria when the psalm
+        # has an opening antiphon but no explicit closing antiphon wrapper.
+        # This covers the Nunc Dimittis in Compline: venite.app renders only
+        # the opening "Guide us waking" antiphon inside the psalm-parent but
+        # expects the repeat to follow the Gloria Patri.
+        internal_g = psalm_parent.find("div", class_="gloria")
+        if internal_g and ant_wrappers:
+            all_desc = list(psalm_parent.descendants)
+            try:
+                gloria_i = all_desc.index(internal_g)
+            except ValueError:
+                gloria_i = -1
+            has_closing = False
+            if gloria_i >= 0:
+                for aw in ant_wrappers:
+                    try:
+                        if all_desc.index(aw) > gloria_i:
+                            has_closing = True
+                            break
+                    except ValueError:
+                        pass
+            if not has_closing and gloria_i >= 0:
+                ant_source = ant_wrappers[0]
+                ant_div = ant_source.find("div", class_="antiphon")
+                ant_p   = ant_source.find("p")
+                ant_text = (
+                    ant_div.get_text(strip=True) if ant_div
+                    else ant_p.get_text(strip=True) if ant_p
+                    else ""
+                )
+                if ant_text:
+                    repeat_wrapper = soup.new_tag(
+                        "ldf-liturgical-document", attrs={"class": "antiphon"}
+                    )
+                    repeat_div = soup.new_tag("div", attrs={"class": "antiphon"})
+                    repeat_div.string = ant_text
+                    repeat_wrapper.append(repeat_div)
+                    internal_g.insert_after(repeat_wrapper)
+
     # ── Step 2a: move pre-psalm gloria article to AFTER the psalm ────────
     # venite.app sometimes places the gloria ldf-refrain article BEFORE the
     # invitatory ldf-psalm article in document order.  Detect this pattern
@@ -441,30 +480,22 @@ def _fix_antiphons(soup: BeautifulSoup) -> None:
         if not (prev_art and prev_art.find("div", class_="gloria")):
             continue  # no out-of-order gloria found
 
-        # Don't reposition the Gloria if it directly follows a preces exchange.
-        # In Morning Prayer the opening Gloria ("Glory to the Father…") lives
-        # correctly between "And our mouth shall proclaim your praise" and the
-        # Venite.  Moving it would strip it from that position.  A genuinely
-        # out-of-order Venite Gloria (venite.app bug) has another Gloria, not
-        # a preces-block, immediately before it.
-        prev_of_gloria = prev_art.find_previous_sibling()
-        while prev_of_gloria and isinstance(prev_of_gloria, NavigableString):
-            prev_of_gloria = prev_of_gloria.find_previous_sibling()
-        if prev_of_gloria and prev_of_gloria.find("div", class_="preces-block"):
-            continue  # Gloria follows preces exchange; leave it in place
-
         # Capture antiphon text from the first antiphon wrapper inside the psalm
         ant_wrapper = psalm_parent_el.find("ldf-liturgical-document", class_="antiphon")
         ant_div = ant_wrapper.find("div", class_="antiphon") if ant_wrapper else None
         ant_text = ant_div.get_text(strip=True) if ant_div else ""
 
-        # Move the gloria article to immediately AFTER the psalm article
-        gloria_art = prev_art.extract()
-        psalm_art.insert_after(gloria_art)
+        # Leave the original gloria article in place between the preces and the
+        # psalm — it serves as the opening doxology after "And our mouth shall
+        # proclaim your praise."  Create a fresh ending gloria article to appear
+        # AFTER the psalm as the Venite's own closing Gloria Patri.
+        ending_gloria_art = soup.new_tag("article", attrs={"class": "sc-ldf-liturgy"})
+        ending_gloria_div = soup.new_tag("div", attrs={"class": "gloria"})
+        ending_gloria_art.append(ending_gloria_div)
+        psalm_art.insert_after(ending_gloria_art)
 
-        # The external gloria now covers the psalm; remove any internal div.gloria
-        # to avoid a duplicate (the same duplication that affects the Phos Hilaron
-        # when the external refrain is already in position rather than pre-psalm).
+        # Remove any internal div.gloria from the psalm (now superseded by the
+        # new ending gloria article directly above).
         for internal_g in psalm_el.find_all("div", class_="gloria"):
             internal_g.decompose()
 
@@ -474,7 +505,7 @@ def _fix_antiphons(soup: BeautifulSoup) -> None:
             repeat_div = soup.new_tag("div", attrs={"class": "antiphon"})
             repeat_div.string = ant_text
             repeat_art.append(repeat_div)
-            gloria_art.insert_after(repeat_art)
+            ending_gloria_art.insert_after(repeat_art)
 
     # ── Step 2b: deduplicate post-gloria antiphon ldf-refrain elements ────
     all_refrains = soup.find_all("ldf-refrain")
@@ -826,7 +857,7 @@ def _handle_psalm_headings(soup: BeautifulSoup) -> None:
             prev = prev.find_previous_sibling()
         if prev and getattr(prev, "name", None) in ("h1", "h2", "h3", "h4"):
             continue
-        h4 = soup.new_tag("h4", attrs={"class": "psalm-heading"})
+        h4 = soup.new_tag("h3", attrs={"class": "psalm-heading"})
         h4.string = f"Psalm {num}"
         target.insert_before(h4)
 
@@ -842,7 +873,13 @@ def _handle_psalm_headings(soup: BeautifulSoup) -> None:
 # ---------------------------------------------------------------------------
 
 def _fix_sc_span_spaces(soup: BeautifulSoup) -> None:
-    """Ensure a space exists on both sides of <span class="sc"> elements."""
+    """
+    Ensure a space exists on both sides of <span class="sc"> elements, then
+    unwrap the span entirely so "LORD" (YHWH) renders with no special styling.
+    venite.app marks the divine name with class="sc sc-ldf-string", which our
+    CSS previously styled as small-caps.  Removing the element guarantees the
+    word matches surrounding psalm text regardless of reader or CSS cascade.
+    """
     for span in soup.find_all("span", class_="sc"):
         # Ensure space BEFORE the span
         prev = span.previous_sibling
@@ -855,6 +892,9 @@ def _fix_sc_span_spaces(soup: BeautifulSoup) -> None:
             first_char = str(nxt)[0]
             if not first_char.isspace() and first_char not in ',;:.!?)]':
                 nxt.replace_with(" " + str(nxt))
+
+        # Remove the span wrapper; its text content stays in place
+        span.unwrap()
 
 
 # ---------------------------------------------------------------------------
@@ -1014,7 +1054,7 @@ def _add_section_headings(soup: BeautifulSoup, office_name: str = "") -> None:
 
     def _insert_h4_before(el, text, css="lesson-heading"):
         art = el.find_parent("article") or el
-        h = soup.new_tag("h4", attrs={"class": css})
+        h = soup.new_tag("h3", attrs={"class": css})
         h.string = text
         art.insert_before(h)
 
@@ -1065,28 +1105,35 @@ def _add_section_headings(soup: BeautifulSoup, office_name: str = "") -> None:
                 break
 
     # B2. Invitatory and Psalter
-    #     The opening versicle "Lord, open our lips" marks the start of
-    #     this section in Morning Prayer.
+    #     Morning Prayer: "Lord, open our lips" versicle.
+    #     Evening Prayer: "O God, make speed to save us" opening versicle.
     if "Invitatory and Psalter" not in injected_sections:
         for preces in soup.find_all("div", class_="preces-block"):
             t = _norm(preces)
-            if "open our lips" in t:
+            if "open our lips" in t or (
+                "make speed to save us" in t and office_name == "Evening Prayer"
+            ):
                 if not _prev_is_heading(preces):
                     _insert_h3_before(preces, "Invitatory and Psalter")
                 break
 
     # B3. The Lessons (section header) + The First / Second Lesson
-    # For Noonday Prayer and Compline the single short lesson is labelled
-    # "The Reading" (an h3 section heading, not a subsection h4).
+    # For Noonday Prayer and Compline the single short lesson is headed
+    # "A Short Reading" (an h3 section heading, not a subsection h4).
+    # Short readings don't have "A Reading from…" text; find any bible-reading div.
+    # Full lessons in MP/EP always start with "A Reading from [book]", so filter those.
     _is_noonday_or_compline = office_name in ("Noonday Prayer", "Compline")
-    lesson_divs = [
-        d for d in soup.find_all("div", class_="bible-reading")
-        if "a reading from" in _norm(d) or "a reading" in _norm(d)
-    ]
+    if _is_noonday_or_compline:
+        lesson_divs = soup.find_all("div", class_="bible-reading")
+    else:
+        lesson_divs = [
+            d for d in soup.find_all("div", class_="bible-reading")
+            if "a reading from" in _norm(d) or "a reading" in _norm(d)
+        ]
     if lesson_divs:
         if _is_noonday_or_compline:
             if not _prev_is_heading(lesson_divs[0]):
-                _insert_h3_before(lesson_divs[0], "The Reading")
+                _insert_h3_before(lesson_divs[0], "A Short Reading")
         else:
             if "The Lessons" not in injected_sections and len(lesson_divs) > 1:
                 _insert_h3_before(lesson_divs[0], "The Lessons")
@@ -1107,8 +1154,8 @@ def _add_section_headings(soup: BeautifulSoup, office_name: str = "") -> None:
 
     # B5. The Prayers
     #     MP/EP: opened by "The Lord be with you".
-    #     Noonday/Compline: opened by the Kyrie or Lord's Prayer; fall back to
-    #     "Let us pray" (which precedes the collects).
+    #     Compline: opened by the "Into your hands" responsory.
+    #     Noonday: opened by the Kyrie (if present).
     if "The Prayers" not in injected_sections:
         found_prayers = False
         for preces in soup.find_all("div", class_="preces-block"):
@@ -1118,13 +1165,23 @@ def _add_section_headings(soup: BeautifulSoup, office_name: str = "") -> None:
                     _insert_h3_before(preces, "The Prayers")
                 found_prayers = True
                 break
-        if not found_prayers and _is_noonday_or_compline:
-            # Use "Lord, have mercy" (Kyrie) as the start of the Prayers section
+        if not found_prayers and office_name == "Compline":
+            # Compline: "The Prayers" begins with the "Into your hands" responsory
             for preces in soup.find_all("div", class_="preces-block"):
                 t = _norm(preces)
-                if "lord, have mercy" in t and "christ, have mercy" in t:
+                if "into your hands" in t and "commend my spirit" in t:
                     if not _prev_is_heading(preces):
                         _insert_h3_before(preces, "The Prayers")
+                    found_prayers = True
+                    break
+        if not found_prayers and office_name == "Noonday Prayer":
+            # Noonday: the Kyrie may be ldf-responsive-prayer.responsive rather than
+            # a preces-block, so search any element for the Kyrie text.
+            for el in soup.find_all(["div", "ldf-responsive-prayer"]):
+                t = _norm(el)
+                if "lord, have mercy" in t and "christ, have mercy" in t:
+                    if not _prev_is_heading(el):
+                        _insert_h3_before(el, "Kyrie")
                     found_prayers = True
                     break
 
@@ -1135,7 +1192,44 @@ def _add_section_headings(soup: BeautifulSoup, office_name: str = "") -> None:
             t = _norm(preces)
             if "lord, have mercy" in t and "christ, have mercy" in t:
                 if not _prev_is_heading(preces):
-                    _insert_h4_before(preces, "The Kyrie", css="lesson-heading")
+                    _insert_h4_before(preces, "Kyrie", css="lesson-heading")
+                break
+
+    # B7. Closing Prayer — Noonday Prayer only.
+    #     The "Lord, hear our prayer" versicle pair that precedes the collect.
+    if office_name == "Noonday Prayer":
+        for preces in soup.find_all("div", class_="preces-block"):
+            t = _norm(preces)
+            if "lord, hear our prayer" in t and "let our cry come to you" in t:
+                if not _prev_is_heading(preces):
+                    _insert_h3_before(preces, "Closing Prayer")
+                break
+
+    # B8. Nunc Dimittis — Compline only.
+    #     Insert heading before the opening antiphon ("Guide us waking") that
+    #     precedes the canticle.
+    if office_name == "Compline":
+        for el in soup.find_all(string=re.compile(r"guide us waking", re.I)):
+            art = el.find_parent("article") or el.parent
+            if not _prev_is_heading(art):
+                _insert_h3_before(art, "Nunc Dimittis")
+            break
+
+    # B9. Closing Prayer — Compline only.
+    #     Insert heading immediately before "Let us bless the Lord."
+    if office_name == "Compline":
+        for preces in soup.find_all("div", class_="preces-block"):
+            t = _norm(preces)
+            if "let us bless the lord" in t:
+                if not _prev_is_heading(preces):
+                    _insert_h3_before(preces, "Closing Prayer")
+                break
+        else:
+            # Fallback: search any element text
+            for el in soup.find_all(string=re.compile(r"let us bless the lord", re.I)):
+                art = el.find_parent("article") or el.parent
+                if not _prev_is_heading(art):
+                    _insert_h3_before(art, "Closing Prayer")
                 break
 
 
@@ -1198,16 +1292,27 @@ def _add_structural_separators(soup: BeautifulSoup) -> None:
     # -- 4. Before "Let us bless the Lord" (closing of every office) --
     # Search preces-blocks first (MP/EP/Compline); fall back to any element
     # for offices (Noonday) where the closing versicle is in ldf-responsive-prayer.
+    # Skip the <hr> if a section heading already immediately precedes the article
+    # (e.g. Compline's "Closing Prayer" h3 already marks the transition).
+    def _before_art_unless_headed(el):
+        art = el.find_parent("article") or el
+        prev = art.find_previous_sibling()
+        while prev and isinstance(prev, NavigableString):
+            prev = prev.find_previous_sibling()
+        if prev and getattr(prev, "name", "") in ("h1", "h2", "h3", "h4"):
+            return  # heading already provides the visual break
+        art.insert_before(_hr())
+
     _bless_found = False
     for preces in soup.find_all("div", class_="preces-block"):
         t = _norm(preces)
         if "let us bless the lord" in t:
-            _before_art(preces)
+            _before_art_unless_headed(preces)
             _bless_found = True
             break
     if not _bless_found:
         for el in soup.find_all(string=re.compile(r"let us bless the lord", re.I)):
-            _before_art(el.parent)
+            _before_art_unless_headed(el.parent)
             break
 
     # -- 5. "Thanks be to God" response inside short readings → reading-response class --
@@ -1319,7 +1424,7 @@ def _add_collect_structure(soup: BeautifulSoup, office_name: str = "") -> None:
             return
         labeled.add(id(art))
         if not _prev_heading(art.find("ldf-text") or art):
-            h4 = soup.new_tag("h4", attrs={"class": "collect-heading"})
+            h4 = soup.new_tag("h3", attrs={"class": "collect-heading"})
             h4.string = heading_text
             art.insert_before(h4)
 
@@ -1350,7 +1455,7 @@ def _add_collect_structure(soup: BeautifulSoup, office_name: str = "") -> None:
     # Walk forward from each "Let us pray" preces block and label unlabelled
     # ldf-text articles.  Compline gets a heading only on the first collect.
     if office_name == "Compline":
-        collect_label = "The Collects of Compline"
+        collect_label = "The Collects for Compline"
     elif office_name == "Noonday Prayer":
         collect_label = "The Collect of Noonday Prayer"
     else:
@@ -1376,7 +1481,7 @@ def _add_collect_structure(soup: BeautifulSoup, office_name: str = "") -> None:
                 break               # heading on first collect only
 
     # ── 4. hr separator between consecutive collect headings ──────────────
-    for h4 in soup.find_all("h4", class_="collect-heading"):
+    for h4 in soup.find_all("h3", class_="collect-heading"):
         prev = h4.find_previous_sibling()
         while prev and isinstance(prev, NavigableString):
             prev = prev.find_previous_sibling()
@@ -1384,6 +1489,14 @@ def _add_collect_structure(soup: BeautifulSoup, office_name: str = "") -> None:
         if prev and getattr(prev, "name", "") == "article":
             hr = soup.new_tag("hr", attrs={"class": "collect-break"})
             h4.insert_before(hr)
+
+    # ── 5. Compline: override any fingerprint-derived heading with generic label ──
+    # Steps 1–2 may label individual Compline collects by name (e.g.
+    # "A Collect for Aid Against Perils") before Step 3 can apply the generic
+    # label.  Rename every collect heading in Compline to the office label.
+    if office_name == "Compline":
+        for h in soup.find_all("h3", class_="collect-heading"):
+            h.string = collect_label
 
 
 # ---------------------------------------------------------------------------
@@ -1551,9 +1664,8 @@ h1.day-header + .office-section h2.office-heading {
     page-break-before: avoid;
 }
 
-/* ── Major section headings (Confession, Invitatory, The Lessons …) ── */
-h3,
-h3.section-heading {
+/* ── All section headings — unified style ── */
+h3 {
     font-size: 1em;
     font-variant: small-caps;
     letter-spacing: 0.04em;
@@ -1562,27 +1674,6 @@ h3.section-heading {
     margin: 2em 0 0.4em;
     padding-bottom: 0.15em;
     border-bottom: 1px dotted #aaa;
-}
-
-/* ── Sub-section headings (The First Lesson, psalm numbers …) ── */
-h4,
-h4.lesson-heading,
-h4.psalm-heading {
-    font-size: 0.95em;
-    font-style: italic;
-    font-weight: bold;
-    margin: 1.4em 0 0.3em;
-}
-
-/* ── Canticle name (Benedicite, Magnificat …) ── */
-h3.canticle-heading {
-    font-size: 0.95em;
-    font-variant: normal;
-    font-style: italic;
-    font-weight: bold;
-    letter-spacing: 0;
-    border-bottom: none;
-    margin: 1.8em 0 0.3em;
 }
 
 h5, h6 {
@@ -1633,16 +1724,16 @@ div.preces-block {
     margin: 0.5em 0 0.8em;
 }
 p.preces-versicle {
-    margin: 0.25em 0;
+    margin: 0;
     padding-left: 0;
 }
 p.preces-response {
-    margin: 0.25em 0;
-    padding-left: 2em;
+    margin: 0;
+    padding-left: 0;
 }
 /* Short call-and-response pairs (Kyrie, versicles) — no indent */
 p.preces-response-inline {
-    margin: 0.25em 0;
+    margin: 0;
     padding-left: 0;
 }
 /* Extra spacing after "For you have redeemed me…" before "Keep us, O Lord…" */
@@ -1716,10 +1807,6 @@ sup {
     display: none;
 }
 
-/* ── Small-caps divine name (Lord / God) ── */
-span.sc {
-    font-variant: small-caps;
-}
 
 /* ── Office section wrapper ── */
 div.office-section {
@@ -1754,14 +1841,6 @@ hr.collect-break {
     margin: 0.8em 0;
 }
 
-/* ── Named collect heading (Collect of the Day, A Prayer for Mission …) ── */
-h4.collect-heading {
-    font-size: 0.92em;
-    font-style: italic;
-    font-weight: bold;
-    font-variant: normal;
-    margin: 1.4em 0 0.3em;
-}
 
 /* ── "Thanks be to God" response after a short reading ── */
 p.reading-response {
@@ -1818,25 +1897,12 @@ def _make_day_xhtml(d: date, offices: Dict[str, str]) -> str:
     )
 
 
-def _make_title_xhtml(title_label: str,
-                      chapters: List[Tuple[date, str]] = []) -> str:
+def _make_title_xhtml(title_label: str) -> str:
     """
     Build the title-page XHTML.
 
     title_label – e.g. '2026', 'March 2026', 'March 15, 2026'
-    chapters    – list of (date, file_name) pairs; used to emit nav links so
-                  readers can jump directly to any day from the title page.
     """
-    # Build clickable day links (links directly to the #top anchor so the
-    # reader always opens at the very first line of the day's content).
-    links_html = ""
-    if chapters:
-        items = "".join(
-            f'  <li><a href="{fname}#top">{day_ordinal(d)}</a></li>\n'
-            for d, fname in chapters
-        )
-        links_html = f'<nav>\n<ol style="list-style:none;padding:0;">\n{items}</ol>\n</nav>\n'
-
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<!DOCTYPE html>\n'
@@ -1854,7 +1920,6 @@ def _make_title_xhtml(title_label: str,
         "<hr/>\n"
         "<p><em>Morning Prayer · Noonday Prayer · Evening Prayer · Compline</em></p>\n"
         "</div>\n"
-        f"{links_html}"
         "</body>\n"
         "</html>\n"
     )
@@ -1934,10 +1999,7 @@ def build_epub(
         file_name="title.xhtml",
         lang="en",
     )
-    title_page.content = _make_title_xhtml(
-        title_label,
-        [(d, ch.file_name) for d, ch in chapters],
-    ).encode("utf-8")
+    title_page.content = _make_title_xhtml(title_label).encode("utf-8")
     title_page.add_item(css_item)
     book.add_item(title_page)
 
@@ -1953,7 +2015,18 @@ def build_epub(
 
     toc: list = []
     for month_name, month_chapters in monthly_groups.items():
-        toc.append((epub.Section(month_name), tuple(month_chapters)))
+        # Use epub.Link with "#top" fragment so every reader navigates to the
+        # h1.day-header (id="top") rather than a remembered scroll position or
+        # the first substantive content element (which would be Morning Prayer).
+        links = tuple(
+            epub.Link(
+                href=ch.file_name + "#top",
+                title=ch.title,
+                uid=ch.id or ch.file_name,
+            )
+            for ch in month_chapters
+        )
+        toc.append((epub.Section(month_name), links))
 
     book.toc = toc
 
