@@ -295,6 +295,33 @@ GLORIA_FULL = (
     "as it was in the beginning, is now, and will be for ever. Amen."
 )
 
+# Traditional (Rite I) Lord's Prayer — one entry per line, matching the
+# per-<p> structure venite.app uses when it renders the Traditional version.
+# Used to replace Contemporary text when venite.app ignores lords_prayer:0
+# (known issue for Compline).
+_LORDS_PRAYER_TRADITIONAL: tuple = (
+    "Our Father, who art in heaven,",
+    "hallowed be thy Name,",
+    "thy kingdom come,",
+    "thy will be done,",
+    "on earth as it is in heaven.",
+    "Give us this day our daily bread.",
+    "And forgive us our trespasses,",
+    "as we forgive those",
+    "who trespass against us.",
+    "And lead us not into temptation,",
+    "but deliver us from evil.",
+    "For thine is the kingdom,",
+    "and the power, and the glory,",
+    "for ever and ever. Amen.",
+)
+
+# Phrases that appear only in the Contemporary Lord's Prayer (not Traditional).
+_CONTEMPORARY_LP_MARKERS: tuple = (
+    "save us from the time of trial",
+    "forgive us our sins as we forgive those who sin",
+)
+
 # Preces response texts that should never be indented (case-insensitive match
 # after stripping trailing punctuation).
 _PRECES_INLINE_TEXTS: frozenset = frozenset({
@@ -713,6 +740,39 @@ def _convert_preces_tables(soup: BeautifulSoup) -> None:
     # Remove any remaining <em class="label"> role labels
     for label in soup.find_all("em", class_="label"):
         label.decompose()
+
+
+# ---------------------------------------------------------------------------
+# 4b. Force Traditional Lord's Prayer if Contemporary was rendered
+#     venite.app ignores lords_prayer:0 for Compline; detect via unique
+#     Contemporary phrases and replace the ldf-text content.
+# ---------------------------------------------------------------------------
+
+def _fix_lords_prayer(soup: BeautifulSoup) -> None:
+    """
+    Replace a Contemporary Lord's Prayer with the Traditional (Rite I) text.
+
+    Detection: any ldf-text element whose text contains a phrase that exists
+    only in the Contemporary version ("save us from the time of trial", etc.).
+    Replacement: clear the element's children and insert a single <p> with
+    the full Traditional text.
+    """
+    for ldf in soup.find_all("ldf-text"):
+        text_lower = " ".join(ldf.get_text().split()).lower()
+        if "our father" not in text_lower:
+            continue
+        if not any(m in text_lower for m in _CONTEMPORARY_LP_MARKERS):
+            continue
+        # Contemporary Lord's Prayer detected — replace with Traditional.
+        # venite.app renders the Traditional version as a single <p class="text-body">
+        # with <br> tags between lines (no inter-line paragraph spacing).
+        ldf.clear()
+        p = soup.new_tag("p", attrs={"class": "text-body"})
+        for i, line in enumerate(_LORDS_PRAYER_TRADITIONAL):
+            p.append(NavigableString(line))
+            if i < len(_LORDS_PRAYER_TRADITIONAL) - 1:
+                p.append(soup.new_tag("br"))
+        ldf.append(p)
 
 
 # ---------------------------------------------------------------------------
@@ -1460,6 +1520,49 @@ def _add_collect_structure(soup: BeautifulSoup, office_name: str = "") -> None:
             )
             _label_art(art, display_label)
 
+    # ── 2b. MP/EP: anchor backward from first labeled fixed collect ──────────
+    # On feast days venite.app sets data-ldf-label to the feast name (e.g.
+    # "Philip and James, Apostles") rather than "Collect of the Day", so
+    # Step 2 misses it.  The actual DOM order in the Prayers section is:
+    #   "Let us pray" preces → Lord's Prayer → Suffrages → [day collect] →
+    #   A Collect for Guidance (MP) / A Collect for Peace (EP) → …
+    # Walking forward from "Let us pray" always hits the Lord's Prayer first
+    # and breaks.  Instead, anchor on the first already-labeled fixed collect
+    # in document order and look at the element immediately preceding it —
+    # that is always the day collect.  Handles both direct <article> siblings
+    # and day collects wrapped in an <ldf-option> element.
+    if office_name in ("Morning Prayer", "Evening Prayer"):
+        for art in soup.find_all("article"):
+            if id(art) not in labeled or not art.find("ldf-text"):
+                continue
+            # art is the first labeled fixed collect in document order.
+            # Walk backward past any h3/hr elements that _label_art already
+            # injected before this article (e.g. the "A Collect for Fridays"
+            # heading inserted by Step 2 just above) to reach the preceding
+            # article or ldf-option element.
+            sib = art.find_previous_sibling()
+            while sib and (
+                isinstance(sib, NavigableString)
+                or getattr(sib, "name", "") in ("h3", "hr")
+            ):
+                sib = sib.find_previous_sibling()
+            if not sib:
+                break
+            candidate_art = None
+            sib_name = getattr(sib, "name", "")
+            if sib_name == "article":
+                candidate_art = sib
+            elif sib_name == "ldf-option":
+                candidate_art = sib.find("article")
+            if (candidate_art
+                    and id(candidate_art) not in labeled
+                    and candidate_art.find("ldf-text")
+                    and not candidate_art.find("ldf-psalm")
+                    and not candidate_art.find("div", class_="preces-block")
+                    and "our father" not in _norm(candidate_art)):
+                _label_art(candidate_art, "The Collect(s) of the Day")
+            break  # only process the first labeled article
+
     # ── 3. Noonday / Compline: office-specific heading after "Let us pray" ─
     # Walk forward from each "Let us pray" preces block and label unlabelled
     # ldf-text articles.  Compline gets a heading only on the first collect.
@@ -1468,7 +1571,7 @@ def _add_collect_structure(soup: BeautifulSoup, office_name: str = "") -> None:
     elif office_name == "Noonday Prayer":
         collect_label = "The Collect of Noonday Prayer"
     else:
-        collect_label = "Collect"
+        collect_label = "The Collect(s) of the Day"
 
     for preces_div in soup.find_all("div", class_="preces-block"):
         if "let us pray" not in _norm(preces_div):
@@ -1601,6 +1704,7 @@ def process_office_html(
     _remove_rubrics(working)             # red instruction text
     _remove_meditation(working)          # meditation timer + P&T section
     _convert_preces_tables(working)      # label | text → clean paragraphs
+    _fix_lords_prayer(working)           # force Traditional if Contemporary rendered
     _fix_antiphons(working)              # antiphon only before psalm + after Gloria
     _fix_gloria(working)                 # collapse split Gloria Patri to one string
     _fix_preces_layout(working)          # remove indent from short V/R pairs
