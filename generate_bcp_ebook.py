@@ -748,31 +748,53 @@ def _convert_preces_tables(soup: BeautifulSoup) -> None:
 #     Contemporary phrases and replace the ldf-text content.
 # ---------------------------------------------------------------------------
 
-def _fix_lords_prayer(soup: BeautifulSoup) -> None:
+def _fix_lords_prayer(soup: BeautifulSoup, office_name: str = "") -> None:
     """
     Replace a Contemporary Lord's Prayer with the Traditional (Rite I) text.
+    For Compline (preceded by the Kyrie), the doxology is omitted per BCP rubric,
+    so the prayer ends with "but deliver us from evil."
 
     Detection: any ldf-text element whose text contains a phrase that exists
     only in the Contemporary version ("save us from the time of trial", etc.).
     Replacement: clear the element's children and insert a single <p> with
-    the full Traditional text.
+    the Traditional text (truncated for Compline).
     """
+    is_compline = office_name == "Compline"
+    # BCP rubric: when the Lord's Prayer follows the Kyrie (Compline), omit
+    # the doxology ("For thine is the kingdom…"). Lines 0–10 end with
+    # "but deliver us from evil."
+    lp_lines = _LORDS_PRAYER_TRADITIONAL[:11] if is_compline else _LORDS_PRAYER_TRADITIONAL
+
     for ldf in soup.find_all("ldf-text"):
         text_lower = " ".join(ldf.get_text().split()).lower()
         if "our father" not in text_lower:
             continue
-        if not any(m in text_lower for m in _CONTEMPORARY_LP_MARKERS):
-            continue
-        # Contemporary Lord's Prayer detected — replace with Traditional.
-        # venite.app renders the Traditional version as a single <p class="text-body">
-        # with <br> tags between lines (no inter-line paragraph spacing).
-        ldf.clear()
-        p = soup.new_tag("p", attrs={"class": "text-body"})
-        for i, line in enumerate(_LORDS_PRAYER_TRADITIONAL):
-            p.append(NavigableString(line))
-            if i < len(_LORDS_PRAYER_TRADITIONAL) - 1:
-                p.append(soup.new_tag("br"))
-        ldf.append(p)
+        if any(m in text_lower for m in _CONTEMPORARY_LP_MARKERS):
+            # Contemporary Lord's Prayer detected — replace with Traditional.
+            # venite.app renders the Traditional version as a single <p class="text-body">
+            # with <br> tags between lines (no inter-line paragraph spacing).
+            ldf.clear()
+            p = soup.new_tag("p", attrs={"class": "text-body"})
+            for i, line in enumerate(lp_lines):
+                p.append(NavigableString(line))
+                if i < len(lp_lines) - 1:
+                    p.append(soup.new_tag("br"))
+            ldf.append(p)
+        elif is_compline and "for thine is the kingdom" in text_lower:
+            # Natively-rendered Traditional in Compline — strip doxology.
+            p = ldf.find("p")
+            if p:
+                children = list(p.children)
+                for i, child in enumerate(children):
+                    if (isinstance(child, NavigableString)
+                            and "for thine is the kingdom" in str(child).lower()):
+                        # Remove the preceding <br> (if any) and all nodes from here on.
+                        start = (i - 1
+                                 if i > 0 and getattr(children[i - 1], "name", None) == "br"
+                                 else i)
+                        for node in children[start:]:
+                            node.extract()
+                        break
 
 
 # ---------------------------------------------------------------------------
@@ -1704,7 +1726,7 @@ def process_office_html(
     _remove_rubrics(working)             # red instruction text
     _remove_meditation(working)          # meditation timer + P&T section
     _convert_preces_tables(working)      # label | text → clean paragraphs
-    _fix_lords_prayer(working)           # force Traditional if Contemporary rendered
+    _fix_lords_prayer(working, office_name)  # force Traditional if Contemporary rendered; strip doxology for Compline
     _fix_antiphons(working)              # antiphon only before psalm + after Gloria
     _fix_gloria(working)                 # collapse split Gloria Patri to one string
     _fix_preces_layout(working)          # remove indent from short V/R pairs
@@ -2505,6 +2527,225 @@ def _days_for_season(year: int, season: str) -> List[date]:
     return days
 
 
+# ---------------------------------------------------------------------------
+# Full-package generator  (--package full)
+# ---------------------------------------------------------------------------
+
+_CANONICAL_SEASONS: tuple = (
+    "Advent", "Christmas", "Epiphany", "Lent",
+    "Holy Week", "Easter", "Pentecost",
+)
+
+
+async def run_package(year: int, debug: bool) -> None:
+    """
+    Fetch all days for *year* in one browser session, then assemble the
+    complete EPUB package:
+      •  1 full-year EPUB
+      • 12 monthly EPUBs
+      •  1 EPUB per day (365 or 366 files in a daily/ subfolder)
+      •  1 EPUB per liturgical season (days filtered to the target year)
+
+    All output goes into  bcp_daily_office_{year}/  with a  daily/
+    subfolder for the per-day files.
+    """
+    days      = _days_for_year(year)
+    out_dir   = Path(f"bcp_daily_office_{year}")
+    daily_dir = out_dir / "daily"
+    out_dir.mkdir(exist_ok=True)
+    daily_dir.mkdir(exist_ok=True)
+
+    total_pages = len(days) * len(OFFICES)
+    cover_found = next((c for c in COVER_CANDIDATES if c.exists()), None)
+
+    print(f"\nBCP Daily Office eBook Generator — Full Package")
+    print(f"══════════════════════════════════════════════════")
+    print(f"Year:     {year}")
+    print(f"Days:     {len(days)}")
+    print(f"Offices:  {len(OFFICES)} per day  ({', '.join(n for _, n in OFFICES)})")
+    print(f"Pages:    {total_pages} total")
+    print(f"Cover:    {cover_found.name if cover_found else '(none — place cover.jpg next to script)'}")
+    print(f"Cache:    {CACHE_DIR.resolve()}")
+    print(f"Output:   {out_dir.resolve()}/")
+    print()
+
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    cached_count = sum(
+        1 for d in days for slug, _ in OFFICES if cache_path(d, slug).exists()
+    )
+    to_fetch = total_pages - cached_count
+    print(f"Cached:   {cached_count}/{total_pages} pages")
+    if to_fetch > 0:
+        print(
+            f"Fetching: {to_fetch} pages  "
+            f"(~{to_fetch * 15 // 60} min estimated, may vary)"
+        )
+    print()
+
+    # CSS item shared across all EPUBs
+    css_item = epub.EpubItem(
+        uid="style-main",
+        file_name="style/main.css",
+        media_type="text/css",
+        content=EPUB_CSS.encode("utf-8"),
+    )
+
+    # Load cover image once
+    cover_bytes: Optional[bytes] = None
+    cover_media_type = "image/jpeg"
+    for candidate in COVER_CANDIDATES:
+        if candidate.exists():
+            cover_bytes = candidate.read_bytes()
+            cover_media_type = (
+                "image/png" if candidate.suffix.lower() == ".png" else "image/jpeg"
+            )
+            print(f"Cover:    {candidate.name}\n")
+            break
+
+    # ── Fetch and process all days (single browser session) ──────────────
+    chapters: List[Tuple[date, epub.EpubHtml]] = []
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True)
+        context = await browser.new_context(
+            viewport={"width": 1280, "height": 900},
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            locale="en-US",
+        )
+
+        print("Configuring browser preferences…")
+        await configure_localstorage(context)
+        print("Done.\n")
+
+        for i, d in enumerate(days):
+            label          = day_ordinal(d)
+            already_cached = all(
+                cache_path(d, slug).exists() for slug, _ in OFFICES
+            )
+
+            print(f"[{i + 1:3d}/{len(days)}] {label}  ", end="", flush=True)
+
+            fetch_tasks = [
+                fetch_office_html(context, d, slug, name)
+                for slug, name in OFFICES
+            ]
+            results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+
+            office_content: Dict[str, str] = {}
+            for (slug, name), result in zip(OFFICES, results):
+                if isinstance(result, Exception):
+                    print(f"\n  Error {name}: {result}")
+                    office_content[slug] = ""
+                elif isinstance(result, str):
+                    office_content[slug] = process_office_html(
+                        result, d, name, debug=debug
+                    )
+                else:
+                    office_content[slug] = ""
+
+            xhtml    = _make_day_xhtml(d, office_content)
+            filename = f"day_{d.strftime('%Y_%m_%d')}.xhtml"
+            chapter  = epub.EpubHtml(title=label, file_name=filename, lang="en")
+            chapter.content = xhtml.encode("utf-8")
+            chapter.add_item(css_item)
+            chapters.append((d, chapter))
+
+            print("✓")
+
+            if not already_cached:
+                await asyncio.sleep(POLITE_DELAY)
+
+        await browser.close()
+
+    # ── Assemble all EPUBs from the in-memory chapters ───────────────────
+    def _write(
+        label: str,
+        id_suffix: str,
+        subset: List[Tuple[date, epub.EpubHtml]],
+        path: Path,
+        *,
+        verbose: bool = True,
+    ) -> None:
+        """Build one EPUB from *subset* and write it to *path*."""
+        if not subset:
+            return
+        book = build_epub(
+            label, id_suffix, subset, css_item, cover_bytes, cover_media_type,
+        )
+        epub.write_epub(str(path), book)
+        if verbose:
+            size_mb = path.stat().st_size / 1_048_576
+            print(f"  {path.name}  ({size_mb:.1f} MB)")
+
+    # Full year
+    print(f"\n── Full year ──────────────────────────────────────────────────────")
+    _write(str(year), str(year), chapters,
+           out_dir / f"bcp_daily_office_{year}.epub")
+
+    # Monthly
+    print(f"\n── Monthly ────────────────────────────────────────────────────────")
+    for month in range(1, 13):
+        mc = [(d, ch) for d, ch in chapters if d.month == month]
+        if not mc:
+            continue
+        mname = date(year, month, 1).strftime("%B")
+        _write(f"{mname} {year}", f"{year}-{month:02d}", mc,
+               out_dir / f"bcp_daily_office_{year}_{mname}.epub")
+
+    # Daily (progress counter replaces per-file output to avoid 365 lines)
+    print(f"\n── Daily ({len(chapters)} files) ──────────────────────────────────────────────")
+    for count, (d, ch) in enumerate(chapters, 1):
+        _write(day_ordinal(d), d.strftime("%Y-%m-%d"), [(d, ch)],
+               daily_dir / f"bcp_daily_office_{d.strftime('%Y_%m_%d')}.epub",
+               verbose=False)
+        print(f"\r  {count}/{len(chapters)}", end="", flush=True)
+    print()   # newline after running counter
+
+    # Liturgical seasons (season days filtered to those within the target year)
+    print(f"\n── Liturgical seasons ─────────────────────────────────────────────")
+    for season in _CANONICAL_SEASONS:
+        season_day_set = set(_days_for_season(year, season))
+        sc = [(d, ch) for d, ch in chapters if d in season_day_set]
+        if not sc:
+            continue
+        slug = season.replace(" ", "_")
+        _write(f"{season} {year}", f"{year}-{slug}", sc,
+               out_dir / f"bcp_daily_office_{year}_{slug}.epub")
+        # Warn when the season's full span extends beyond the target year
+        if any(d.year != year for d in season_day_set):
+            print(
+                f"    ^ Note: {season} extends beyond {year}; "
+                f"only days within {year} are included."
+            )
+
+    # ── Cache cleanup ─────────────────────────────────────────────────────
+    removed = 0
+    for d in days:
+        for slug, _ in OFFICES:
+            cp = cache_path(d, slug)
+            if cp.exists():
+                cp.unlink()
+                removed += 1
+    if removed:
+        print(f"\nCache: removed {removed} file(s) from {CACHE_DIR}")
+        try:
+            CACHE_DIR.rmdir()
+        except OSError:
+            pass
+
+    n_season_epubs = sum(
+        1 for s in _CANONICAL_SEASONS
+        if any(d in set(_days_for_season(year, s)) for d, _ in chapters)
+    )
+    total_epubs = 1 + 12 + len(chapters) + n_season_epubs
+    print(f"\nDone!  {total_epubs} EPUBs written to {out_dir.resolve()}/")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Generate a BCP Daily Office EPUB from venite.app",
@@ -2518,6 +2759,7 @@ def main() -> None:
             "  %(prog)s --date 2026-03-15        # single day\n"
             "  %(prog)s --season lent            # Lent 2026\n"
             "  %(prog)s --year 2027 --season advent\n"
+            "  %(prog)s --year 2027 --package full  # complete package\n"
             "\n"
             "Liturgical seasons: Advent, Christmas, Epiphany, Lent,\n"
             "  Holy Week, Easter, Pentecost  (case-insensitive)\n"
@@ -2553,6 +2795,16 @@ def main() -> None:
             "Lent, Holy Week, Easter, or Pentecost"
         ),
     )
+    scope.add_argument(
+        "--package",
+        choices=["full"],
+        metavar="TYPE",
+        help=(
+            "Generate the complete EPUB package for the year (TYPE: full): "
+            "full-year, 12 monthly, all daily, and all liturgical season EPUBs. "
+            "Output goes to bcp_daily_office_{year}/"
+        ),
+    )
 
     parser.add_argument(
         "--debug-html",
@@ -2560,6 +2812,11 @@ def main() -> None:
         help="Save raw HTML to cache dir when the liturgy section cannot be found",
     )
     args = parser.parse_args()
+
+    # ---- Full-package mode -----------------------------------------------
+    if args.package:
+        asyncio.run(run_package(year=args.year, debug=args.debug_html))
+        return
 
     # ---- Resolve the date list and descriptive labels --------------------
     if args.date:
