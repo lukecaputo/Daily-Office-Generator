@@ -29,11 +29,11 @@ Content is retrieved from venite.app. All credit for this original source goes t
 ## Usage
   `python generate_bcp_ebook.py`
   
-    --year : Generates the entire year unless a month is specified. Excluding this argument results in the current year. 
-    --month : Generates a specific month from the default year, unless the year is specified. Accepts a number (1-12) or a full/abbreviated month name. 
-    --date : Generates a specific date (YYYY-MM-DD). Unable to be combined with the year or month argument. 
-    --season : Generates the entire liturgical season (advent, christmas or xmas, epiphany, lent, holyweek or holy-week, easter or eastertide, ordinary-time or ordinarytime or pentecost). 
-    --package : Providing the argument "full" will generate a full year, 12 months, 365 days, and each season as a total package for the given year. The "--year" argument must be used.
+    "--year" : Generates the entire year unless a month is specified. Excluding this argument results in the current year. 
+    "--month" : Generates a specific month from the default year, unless the year is specified. Accepts a number (1-12) or a full/abbreviated month name. 
+    "--date" : Generates a specific date (YYYY-MM-DD). Unable to be combined with the year or month argument. 
+    "--season" : Generates the entire liturgical season (advent, christmas or xmas, epiphany, lent, holyweek or holy-week, easter or eastertide, ordinary-time or ordinarytime or pentecost). 
+    "--package" : Providing the argument "full" will generate a full year, 12 months, 365 days, and each season as a total package for the given year. The "--year" argument must be used.
 
 
 ## Output
@@ -52,3 +52,6 @@ On Kindle Paperwhite 11, the following settings look the best:
   - Font: Bookerly, Bold 0, Size 3
   - Layout: Portrait, Narrow Margins, Narrow Spacing
   - Reading Progress: None
+
+## Other Devices
+Your mileage may vary. I tried using this on my Xteink X4 and it looks pretty bad.
