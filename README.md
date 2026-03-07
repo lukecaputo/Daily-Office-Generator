@@ -33,6 +33,7 @@ Content is retrieved from venite.app. All credit for this original source goes t
     --month : Generates a specific month from the default year, unless the year is specified. Accepts a number (1-12) or a full/abbreviated month name. 
     --date : Generates a specific date (YYYY-MM-DD). Unable to be combined with the year or month argument. 
     --season : Generates the entire liturgical season (advent, christmas or xmas, epiphany, lent, holyweek or holy-week, easter or eastertide, ordinary-time or ordinarytime or pentecost). 
+    --package : Providing the argument "full" will generate a full year, 12 months, 365 days, and each season as a total package for the given year. The "--year" argument must be used.
 
 
 ## Output
@@ -44,4 +45,10 @@ Content is retrieved from venite.app. All credit for this original source goes t
 
 
 ## Kindle
-Use Calibre to convert from EPUB to MOBI.
+Use Calibre to convert from EPUB to AZW3. I'm including these in the generated files alongside the EPUB files. 
+
+On Kindle Paperwhite 11, the following settings look the best:
+
+  - Font: Bookerly, Bold 0, Size 3
+  - Layout: Portrait, Narrow Margins, Narrow Spacing
+  - Reading Progress: None
